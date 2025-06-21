@@ -108,18 +108,21 @@ func main() {
 	args := flag.Args()
 
 	if *versionFlag {
-		fmt.Println("WhoisCLIApp v1.0.0")
+		fmt.Println("WhoisCLIApp v1.3.0")
+		fmt.Println("A simple command-line whois client")
+		fmt.Println("Copyright (c) 2025 darui3018823, All rights reserved.")
+		fmt.Println("This software is released under the BSD 2-Clause License.")
 		return
 	}
 
 	if *helpFlag {
-		fmt.Println("Usage: whoiscli [options] <domain>")
+		fmt.Println("Usage: whois [options] <domain>")
 		flag.PrintDefaults()
 		return
 	}
 
 	if len(args) != 1 {
-		fmt.Println("Usage: whoiscli [-raw] [-o <file>] <domain>")
+		fmt.Println("Usage: whois [-raw] [-o <file>] <domain>")
 		return
 	}
 	domain := args[0]
