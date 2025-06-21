@@ -89,6 +89,15 @@ func getWhoisServer(domain string) string {
 		return "whois.nic.io:43"
 	case strings.HasSuffix(domain, ".dev"):
 		return "whois.nic.google:43"
+	case strings.HasSuffix(domain, ".xyz"):
+		return "whois.nic.xyz:43"
+	case strings.HasSuffix(domain, ".me"):
+		return "whois.nic.me:43"
+	case strings.HasSuffix(domain, ".top"):
+		return "whois.nic.top:43"
+	case strings.HasSuffix(domain, ".su"):
+		return "whois.tcinet.ru:43"
+	// 必要に応じてここに追加
 	default:
 		return "whois.iana.org:43"
 	}
