@@ -9,11 +9,13 @@ whois [options] <domain>
 主なオプション:
 
 - -raw: 生の WHOIS テキストを出力
+- -table: 表形式で出力（箱線）
+- -width <n>: 表形式の幅（列数）。省略時は 120 または環境変数 COLUMNS
 - -o <file>: 出力をファイル保存（自動でカラー無効）
 - -server <host[:port]>: WHOIS サーバを明示指定（例: whois.verisign-grs.com:43）
 - -timeout <dur>: タイムアウト（例: 5s, 2m）
 - -follow: レジストラのリファラ WHOIS を追跡（デフォルト: 有効）
-- -nocolor: カラー出力を無効化
+- -nocolor: カラー出力を無効化（NO_COLOR 環境変数、非TTYも自動無効）
 - -version: バージョン情報表示
 - -help: ヘルプ表示
 
@@ -31,14 +33,14 @@ whois -server whois.verisign-grs.com:43 example.com
 ```json
 {
 	"lang": "ja",
-	"defaultRaw": false,
+	"default_output": "conventional",
 	"color": true
 }
 ```
 
-- lang: "ja" で一部ラベルを日本語化
-- defaultRaw: true で既定を生テキストに
-- color: true でカラー表示（-o 使用時は自動無効）
+- lang: "ja" で一部ラベルを日本語化（"en" で英語）
+- default_output: "conventional" | "table" | "raw"
+- color: true でカラー表示（-o/NO_COLOR/非TTY は自動無効）
 
 ## ビルド（Windows）
 

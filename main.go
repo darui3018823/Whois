@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,6 +33,7 @@ var timeoutFlag = flag.Duration("timeout", 8*time.Second, "Network timeout (e.g.
 var followFlag = flag.Bool("follow", true, "Follow referral WHOIS server if present")
 var noColorFlag = flag.Bool("nocolor", false, "Disable colored output")
 var tableFlag = flag.Bool("table", false, "Render output as a box-drawn table")
+var widthFlag = flag.Int("width", 0, "Table width (columns), default: 120 or $COLUMNS")
 
 var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
@@ -329,6 +332,19 @@ func colorize(s string, color string, enable bool) string {
 	return s
 }
 
+func isStdoutTTY() bool {
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
+func envNoColor() bool {
+	_, ok := os.LookupEnv("NO_COLOR")
+	return ok
+}
+
 func getWhoisServer(domain string) string {
 	domain = strings.ToLower(domain)
 
@@ -395,7 +411,7 @@ func queryWhois(server, query string, timeout time.Duration) (string, error) {
 }
 
 func extractReferral(raw string) string {
-	keys := []string{"Registrar WHOIS Server:", "Whois Server:", "WHOIS Server:"}
+	keys := []string{"Registrar WHOIS Server:", "Whois Server:", "WHOIS Server:", "ReferralServer:"}
 	for _, line := range strings.Split(raw, "\n") {
 		l := strings.TrimSpace(strings.TrimRight(line, "\r"))
 		if l == "" {
@@ -414,6 +430,11 @@ func extractReferral(raw string) string {
 				low := strings.ToLower(v)
 				if strings.HasPrefix(low, "http://") || strings.HasPrefix(low, "https://") {
 					continue
+				}
+				if strings.HasPrefix(low, "whois://") {
+					if u, err := url.Parse(low); err == nil && u.Host != "" {
+						return u.Host
+					}
 				}
 				if low == "none" || strings.Contains(low, "not available") {
 					continue
@@ -474,7 +495,7 @@ func output(lines []string, filename string) {
 }
 
 func centerLine(leftBorder, text, rightBorder string, totalWidth int, colorLeft, colorText, colorRight string, enableColor bool) string {
-	visibleLen := len(text)
+	visibleLen := dispWidth(text)
 	spaceTotal := totalWidth - visibleLen - 2
 	leftSpaces := spaceTotal / 2
 	rightSpaces := spaceTotal - leftSpaces
@@ -488,8 +509,8 @@ func main() {
 	args := flag.Args()
 
 	if *versionFlag {
-		// カラー出力を有効化（ファイル出力でない限り）
-		enableColor := !*noColorFlag
+		// カラー出力（NO_COLOR/非TTYなら無効化）
+		enableColor := !*noColorFlag && isStdoutTTY() && !envNoColor()
 		fmt.Println(colorize("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓", "title", enableColor))
 		fmt.Println(centerLine("┃", "Whois CLI App", "┃", 79, "title", "version", "title", enableColor))
 		fmt.Println(colorize("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛", "title", enableColor))
@@ -510,7 +531,7 @@ func main() {
 	}
 
 	if *helpFlag {
-		enableColor := !*noColorFlag
+		enableColor := !*noColorFlag && isStdoutTTY() && !envNoColor()
 		fmt.Println(colorize("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓", "title", enableColor))
 		fmt.Println(colorize("┃                            ", "title", enableColor) + colorize("Whois CLI Help", "usage", enableColor) + colorize("                             ┃", "title", enableColor))
 		fmt.Println(colorize("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛", "title", enableColor))
@@ -527,6 +548,7 @@ func main() {
 		}{
 			{"-raw", "Output raw whois text without formatting"},
 			{"-table", "Render output as a box-drawn table"},
+			{"-width <n>", "Table width (columns) when using -table"},
 			{"-o <file>", "Output to file (automatically disables colors)"},
 			{"-server <host[:port]>", "Override WHOIS server (e.g., whois.verisign-grs.com:43)"},
 			{"-timeout <duration>", "Network timeout (e.g., 5s, 2m)"},
@@ -559,7 +581,7 @@ func main() {
 		fmt.Println()
 		fmt.Printf("%s %s\n",
 			colorize("Config file:", "label", enableColor),
-			colorize("config.json (lang, defaultRaw, color settings)", "value", enableColor))
+			colorize("config.json (lang, default_output, color)", "value", enableColor))
 		return
 	}
 
@@ -589,15 +611,31 @@ func main() {
 	if *outFile != "" {
 		config.Color = false
 	}
+	// Respect NO_COLOR and non-TTY stdout
+	if envNoColor() || !isStdoutTTY() {
+		config.Color = false
+	}
 
 	// WHOIS サーバー決定（オーバーライド可能）
 	server := *serverFlag
 	if server == "" {
-		server = getWhoisServer(domain)
+		if net.ParseIP(domain) != nil {
+			server = "whois.arin.net:43"
+		} else {
+			server = getWhoisServer(domain)
+		}
+	}
+
+	// 送信クエリ（JPRS英語出力指定に対応）
+	query := domain
+	if strings.HasSuffix(domain, ".jp") && strings.Contains(strings.ToLower(server), "jprs.jp") {
+		if strings.ToLower(config.Lang) == "en" {
+			query = domain + "/e"
+		}
 	}
 
 	// 1回目のクエリ
-	raw1, err := queryWhois(server, domain, *timeoutFlag)
+	raw1, err := queryWhois(server, query, *timeoutFlag)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error connecting to whois server:", err)
 		os.Exit(1)
@@ -631,9 +669,20 @@ func main() {
 	}
 
 	if *tableFlag {
+		width := *widthFlag
+		if width <= 0 {
+			if c := os.Getenv("COLUMNS"); c != "" {
+				if n, err := strconv.Atoi(c); err == nil && n >= 40 {
+					width = n
+				}
+			}
+			if width <= 0 {
+				width = 120
+			}
+		}
 		kvs := extractKVs(finalRaw, config.Lang)
 		if len(kvs) > 0 {
-			lines := renderTable("Whois Result", kvs, 120, config.Color)
+			lines := renderTable("Whois Result", kvs, width, config.Color)
 			output(lines, *outFile)
 			return
 		}
@@ -651,8 +700,19 @@ func main() {
 		return
 	case "table":
 		kvs := extractKVs(finalRaw, config.Lang)
+		width := *widthFlag
+		if width <= 0 {
+			if c := os.Getenv("COLUMNS"); c != "" {
+				if n, err := strconv.Atoi(c); err == nil && n >= 40 {
+					width = n
+				}
+			}
+			if width <= 0 {
+				width = 120
+			}
+		}
 		if len(kvs) > 0 {
-			lines := renderTable("Whois Result", kvs, 120, config.Color)
+			lines := renderTable("Whois Result", kvs, width, config.Color)
 			output(lines, *outFile)
 			return
 		}
