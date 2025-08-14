@@ -22,6 +22,7 @@ var serverFlag = flag.String("server", "", "Override WHOIS server host[:port]")
 var timeoutFlag = flag.Duration("timeout", 8*time.Second, "Network timeout (e.g. 5s, 2m)")
 var followFlag = flag.Bool("follow", true, "Follow referral WHOIS server if present")
 var noColorFlag = flag.Bool("nocolor", false, "Disable colored output")
+var tableFlag = flag.Bool("table", false, "Render output as a box-drawn table")
 
 type Config struct {
 	Lang       string `json:"lang"`
@@ -74,6 +75,16 @@ func colorize(s string, color string, enable bool) string {
 		return "\033[1;34m" + s + "\033[0m" // 青太字
 	case "value":
 		return "\033[1;37m" + s + "\033[0m" // 白太字
+	case "title":
+		return "\033[1;32m" + s + "\033[0m" // 緑太字
+	case "version":
+		return "\033[1;36m" + s + "\033[0m" // シアン太字
+	case "copyright":
+		return "\033[0;33m" + s + "\033[0m" // 黄色
+	case "usage":
+		return "\033[1;35m" + s + "\033[0m" // マゼンタ太字
+	case "option":
+		return "\033[0;32m" + s + "\033[0m" // 緑
 	}
 	return s
 }
@@ -212,21 +223,93 @@ func formatPretty(raw string, lang string, color bool) []string {
 	return out
 }
 
+func centerLine(leftBorder, text, rightBorder string, totalWidth int, colorLeft, colorText, colorRight string, enableColor bool) string {
+	visibleLen := len(text)
+	spaceTotal := totalWidth - visibleLen - 2
+	leftSpaces := spaceTotal / 2
+	rightSpaces := spaceTotal - leftSpaces
+	return colorize(leftBorder+strings.Repeat(" ", leftSpaces), colorLeft, enableColor) +
+		colorize(text, colorText, enableColor) +
+		colorize(strings.Repeat(" ", rightSpaces)+rightBorder, colorLeft, enableColor)
+}
+
 func main() {
 	flag.Parse()
 	args := flag.Args()
 
 	if *versionFlag {
-		fmt.Println("Copyright (c) 2025 darui3018823, All rights reserved.")
-		fmt.Println("WhoisCLIApp v1.5.0")
-		fmt.Println("A simple command-line whois client")
-		fmt.Println("This software is released under the BSD 2-Clause License.")
+		// カラー出力を有効化（ファイル出力でない限り）
+		enableColor := !*noColorFlag
+		fmt.Println(colorize("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓", "title", enableColor))
+		fmt.Println(centerLine("┃", "Whois CLI Tool", "┃", 79, "title", "version", "title", enableColor))
+		fmt.Println(colorize("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛", "title", enableColor))
+		fmt.Println()
+		fmt.Printf("%s %s\n",
+			colorize("Version:", "label", enableColor),
+			colorize("v1.5.0", "version", enableColor))
+		fmt.Printf("%s %s\n",
+			colorize("Description:", "label", enableColor),
+			colorize("A simple command-line whois client with IDN support", "value", enableColor))
+		fmt.Printf("%s %s\n",
+			colorize("License:", "label", enableColor),
+			colorize("BSD 2-Clause License", "value", enableColor))
+		fmt.Printf("%s %s\n",
+			colorize("Copyright:", "label", enableColor),
+			colorize("(c) 2025 darui3018823, All rights reserved.", "copyright", enableColor))
 		return
 	}
 
 	if *helpFlag {
-		fmt.Println("Usage: whois [options] <domain>")
-		flag.PrintDefaults()
+		// カラー出力を有効化（ファイル出力でない限り）
+		enableColor := !*noColorFlag
+		fmt.Println(colorize("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓", "title", enableColor))
+		fmt.Println(colorize("┃                            ", "title", enableColor) + colorize("Whois CLI Help", "usage", enableColor) + colorize("                             ┃", "title", enableColor))
+		fmt.Println(colorize("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛", "title", enableColor))
+		fmt.Println()
+		fmt.Printf("%s %s\n",
+			colorize("Usage:", "label", enableColor),
+			colorize("whois [options] <domain>", "usage", enableColor))
+		fmt.Println()
+		fmt.Printf("%s\n", colorize("Options:", "label", enableColor))
+
+		// オプション一覧を整理して表示
+		options := []struct {
+			flag string
+			desc string
+		}{
+			{"-raw", "Output raw whois text without formatting"},
+			{"-o <file>", "Output to file (automatically disables colors)"},
+			{"-server <host[:port]>", "Override WHOIS server (e.g., whois.verisign-grs.com:43)"},
+			{"-timeout <duration>", "Network timeout (e.g., 5s, 2m)"},
+			{"-follow", "Follow referral WHOIS server if present (default: true)"},
+			{"-nocolor", "Disable colored output"},
+			{"-version", "Show version information"},
+			{"-help", "Show this help message"},
+		}
+
+		for _, opt := range options {
+			fmt.Printf("  %s  %s\n",
+				colorize(fmt.Sprintf("%-25s", opt.flag), "option", enableColor),
+				colorize(opt.desc, "value", enableColor))
+		}
+
+		fmt.Println()
+		fmt.Printf("%s\n", colorize("Examples:", "label", enableColor))
+		examples := []string{
+			"whois daruks.com",
+			"whois -raw minecraft.net",
+			"whois -o ./output.txt wikipedia.org",
+			"whois -server whois.verisign-grs.com:43 daruks.com",
+			"whois アググン.jp",
+		}
+		for _, ex := range examples {
+			fmt.Printf("  %s\n", colorize(ex, "usage", enableColor))
+		}
+
+		fmt.Println()
+		fmt.Printf("%s %s\n",
+			colorize("Config file:", "label", enableColor),
+			colorize("config.json (lang, defaultRaw, color settings)", "value", enableColor))
 		return
 	}
 
