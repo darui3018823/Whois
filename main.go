@@ -108,9 +108,9 @@ func main() {
 	args := flag.Args()
 
 	if *versionFlag {
+		fmt.Println("Copyright (c) 2025 darui3018823, All rights reserved.")
 		fmt.Println("WhoisCLIApp v1.3.0")
 		fmt.Println("A simple command-line whois client")
-		fmt.Println("Copyright (c) 2025 darui3018823, All rights reserved.")
 		fmt.Println("This software is released under the BSD 2-Clause License.")
 		return
 	}
