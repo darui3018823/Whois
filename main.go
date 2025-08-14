@@ -8,9 +8,11 @@ import (
 	"io"
 	"net"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
+	"github.com/mattn/go-runewidth"
 	"golang.org/x/net/idna"
 )
 
@@ -24,10 +26,245 @@ var followFlag = flag.Bool("follow", true, "Follow referral WHOIS server if pres
 var noColorFlag = flag.Bool("nocolor", false, "Disable colored output")
 var tableFlag = flag.Bool("table", false, "Render output as a box-drawn table")
 
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func stripANSI(s string) string {
+	return ansiRe.ReplaceAllString(s, "")
+}
+
+func dispWidth(s string) int {
+	return runewidth.StringWidth(stripANSI(s))
+}
+
+func padRightByWidth(s string, width int) string {
+	w := dispWidth(s)
+	if w >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-w)
+}
+
+// 値の折り返し
+func wrapByWidth(s string, width int) []string {
+	var out []string
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return []string{""}
+	}
+
+	cur := ""
+	for _, word := range strings.Fields(s) {
+		if cur == "" {
+			if dispWidth(word) <= width {
+				cur = word
+				continue
+			}
+			out = append(out, hardWrap(word, width)...)
+			cur = ""
+			continue
+		}
+		cand := cur + " " + word
+		if dispWidth(cand) <= width {
+			cur = cand
+		} else {
+			out = append(out, padRightByWidth(cur, width))
+			if dispWidth(word) <= width {
+				cur = word
+			} else {
+				out = append(out, hardWrap(word, width)...)
+				cur = ""
+			}
+		}
+	}
+	if cur != "" {
+		out = append(out, padRightByWidth(cur, width))
+	}
+	return out
+}
+
+func hardWrap(s string, width int) []string {
+	var out []string
+	var buf string
+	for _, r := range s {
+		buf += string(r)
+		if dispWidth(buf) >= width {
+			out = append(out, padRightByWidth(buf, width))
+			buf = ""
+		}
+	}
+	if buf != "" {
+		out = append(out, padRightByWidth(buf, width))
+	}
+	return out
+}
+
+func renderTable(title string, kvs []KV, width int, color bool) []string {
+	if width < 40 {
+		width = 40
+	}
+
+	maxKey := 0
+	for _, kv := range kvs {
+		if w := dispWidth(kv.Key); w > maxKey {
+			maxKey = w
+		}
+	}
+	innerWidth := width - 2
+	valueWidth := innerWidth - 2 - maxKey - 3
+	if valueWidth < 16 {
+		valueWidth = 16
+		maxKey = innerWidth - 2 - 3 - valueWidth
+		if maxKey < 8 {
+			maxKey = 8
+		}
+	}
+
+	top := "┏" + strings.Repeat("━", width-2) + "┓"
+	mid := "┣" + strings.Repeat("━", width-2) + "┫"
+	bot := "┗" + strings.Repeat("━", width-2) + "┛"
+
+	tspace := width - 2 - dispWidth(title)
+	if tspace < 0 {
+		tspace = 0
+	}
+	l := tspace / 2
+	r := tspace - l
+	titleLine := "┃" + strings.Repeat(" ", l) + title + strings.Repeat(" ", r) + "┃"
+
+	out := []string{
+		colorize(top, "title", color),
+		colorize(titleLine, "title", color),
+		colorize(mid, "title", color),
+	}
+
+	for _, kv := range kvs {
+		keyCell := padRightByWidth(kv.Key, maxKey)
+		wrapped := wrapByWidth(kv.Val, valueWidth)
+		for i, w := range wrapped {
+			if i == 0 {
+				line := "┃ " +
+					colorize(keyCell, "label", color) +
+					" : " +
+					colorize(w, "value", color) +
+					" ┃"
+				out = append(out, line)
+			} else {
+				line := "┃ " +
+					strings.Repeat(" ", maxKey) +
+					" : " +
+					colorize(w, "value", color) +
+					" ┃"
+				out = append(out, line)
+			}
+		}
+	}
+	out = append(out, colorize(bot, "title", color))
+	return out
+}
+
+type KV struct{ Key, Val string }
+
 type Config struct {
 	Lang       string `json:"lang"`
 	DefaultRaw bool   `json:"defaultRaw"`
 	Color      bool   `json:"color"`
+}
+
+var jprsKeys = map[string]string{
+	"ドメイン名":  "Domain Name",
+	"登録者名":   "Registrant",
+	"登録年月日":  "Creation Date",
+	"有効期限":   "Registry Expiry Date",
+	"最終更新":   "Updated Date",
+	"状態":     "Status",
+	"公開連絡窓口": "Registrant Contact",
+	"名前":     "Name",
+	"郵便番号":   "Postal Code",
+	"住所":     "Postal Address",
+	"電話番号":   "Phone",
+	"FAX番号":  "Fax",
+}
+
+func extractKVs(raw, lang string) []KV {
+	var kvs []KV
+	lines := strings.Split(raw, "\n")
+	seen := make(map[string]bool)
+
+	for i := 0; i < len(lines); i++ {
+		l := strings.TrimSpace(strings.TrimRight(lines[i], "\r"))
+		if len(l) == 0 {
+			continue
+		}
+
+		if strings.HasPrefix(l, "[") && strings.Contains(l, "]") {
+			right := strings.TrimPrefix(l, "[")
+			parts := strings.SplitN(right, "]", 2)
+			if len(parts) == 2 {
+				key := strings.TrimSpace(parts[0])
+				val := strings.TrimSpace(parts[1])
+				if val == "" && i+1 < len(lines) {
+					next := strings.TrimSpace(strings.TrimRight(lines[i+1], "\r"))
+					if next != "" && !strings.HasPrefix(next, "[") {
+						val = next
+						i++
+					}
+				}
+				if en, ok := jprsKeys[key]; ok {
+					key = en
+				}
+				keyLabel := translateLabel(key, lang)
+				if val != "" && !seen[keyLabel+":"+val] {
+					kvs = append(kvs, KV{Key: keyLabel, Val: val})
+					seen[keyLabel+":"+val] = true
+				}
+			}
+			continue
+		}
+
+		// 一般的な key: value パターン
+		if strings.Contains(l, ":") {
+			parts := strings.SplitN(l, ":", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			key := strings.TrimSpace(parts[0])
+			val := strings.TrimSpace(parts[1])
+
+			if key == "" || val == "" || strings.HasPrefix(key, "%") || strings.HasPrefix(key, "#") {
+				continue
+			}
+
+			keyLower := strings.ToLower(key)
+			isKnownKey := false
+
+			if _, ok := labels[key]; ok {
+				isKnownKey = true
+			}
+
+			commonPatterns := []string{
+				"domain", "registrar", "registrant", "admin", "tech", "billing",
+				"created", "updated", "expires", "expiry", "status", "server", "name",
+				"organization", "organisation", "email", "phone", "fax", "address",
+				"city", "state", "country", "postal", "whois", "url", "iana",
+			}
+
+			for _, pattern := range commonPatterns {
+				if strings.Contains(keyLower, pattern) {
+					isKnownKey = true
+					break
+				}
+			}
+
+			if isKnownKey {
+				keyLabel := translateLabel(key, lang)
+				if !seen[keyLabel+":"+val] {
+					kvs = append(kvs, KV{Key: keyLabel, Val: val})
+					seen[keyLabel+":"+val] = true
+				}
+			}
+		}
+	}
+	return kvs
 }
 
 func loadConfig(path string) Config {
@@ -39,7 +276,6 @@ func loadConfig(path string) Config {
 
 	var config Config
 	if err := json.NewDecoder(file).Decode(&config); err != nil {
-		// 破損している場合は安全なデフォルト
 		return Config{Lang: "en", DefaultRaw: false, Color: true}
 	}
 	return config
@@ -143,7 +379,6 @@ func queryWhois(server, query string, timeout time.Duration) (string, error) {
 		return "", err
 	}
 	defer conn.Close()
-	// 読み書きの締切を設定
 	_ = conn.SetDeadline(time.Now().Add(timeout))
 	if _, err := fmt.Fprintf(conn, "%s\r\n", query); err != nil {
 		return "", err
@@ -156,7 +391,6 @@ func queryWhois(server, query string, timeout time.Duration) (string, error) {
 }
 
 func extractReferral(raw string) string {
-	// 代表的なフィールドを探索
 	keys := []string{"Registrar WHOIS Server:", "Whois Server:", "WHOIS Server:"}
 	for _, line := range strings.Split(raw, "\n") {
 		l := strings.TrimSpace(strings.TrimRight(line, "\r"))
@@ -173,7 +407,6 @@ func extractReferral(raw string) string {
 				if v == "" {
 					continue
 				}
-				// URL 形式や "None" のような無効値をスキップ
 				low := strings.ToLower(v)
 				if strings.HasPrefix(low, "http://") || strings.HasPrefix(low, "https://") {
 					continue
@@ -214,13 +447,26 @@ func formatPretty(raw string, lang string, color bool) []string {
 			}
 		}
 	}
-	// 何も拾えなかった場合は生テキストにフォールバック
 	if len(out) == 0 {
 		for _, line := range lines {
 			out = append(out, strings.TrimRight(line, "\r"))
 		}
 	}
 	return out
+}
+
+func output(lines []string, filename string) {
+	if filename != "" {
+		err := os.WriteFile(filename, []byte(strings.Join(lines, "\n")+"\n"), 0644)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Failed to write to file:", err)
+			os.Exit(1)
+		}
+	} else {
+		for _, line := range lines {
+			fmt.Println(line)
+		}
+	}
 }
 
 func centerLine(leftBorder, text, rightBorder string, totalWidth int, colorLeft, colorText, colorRight string, enableColor bool) string {
@@ -278,6 +524,7 @@ func main() {
 			desc string
 		}{
 			{"-raw", "Output raw whois text without formatting"},
+			{"-table", "Render output as a box-drawn table"},
 			{"-o <file>", "Output to file (automatically disables colors)"},
 			{"-server <host[:port]>", "Override WHOIS server (e.g., whois.verisign-grs.com:43)"},
 			{"-timeout <duration>", "Network timeout (e.g., 5s, 2m)"},
@@ -297,7 +544,8 @@ func main() {
 		fmt.Printf("%s\n", colorize("Examples:", "label", enableColor))
 		examples := []string{
 			"whois daruks.com",
-			"whois -raw minecraft.net",
+			"whois -table minecraft.net",
+			"whois -raw example.org",
 			"whois -o ./output.txt wikipedia.org",
 			"whois -server whois.verisign-grs.com:43 daruks.com",
 			"whois アググン.jp",
@@ -318,6 +566,11 @@ func main() {
 		flag.PrintDefaults()
 		return
 	}
+
+	// 著作権表示を最初に出力
+	fmt.Println("Whois_CLIApp (c) 2025 darui3018823, All rights reserved.")
+	fmt.Println()
+
 	inputDomain := args[0]
 	// IDN を ASCII (punycode) に正規化
 	asciiDomain, errIDN := idna.Lookup.ToASCII(strings.TrimSpace(inputDomain))
@@ -328,7 +581,6 @@ func main() {
 	domain = strings.ToLower(domain)
 
 	config := loadConfig("config.json")
-	useRaw := *rawFlag || config.DefaultRaw
 
 	if *noColorFlag {
 		config.Color = false
@@ -364,27 +616,32 @@ func main() {
 		}
 	}
 
-	// 出力整形
-	var outputLines []string
-	if useRaw {
-		// 改行統一
-		scanner := bufio.NewScanner(strings.NewReader(finalRaw))
-		for scanner.Scan() {
-			outputLines = append(outputLines, scanner.Text())
-		}
-	} else {
-		outputLines = formatPretty(finalRaw, config.Lang, config.Color)
+	// 出力処理
+	useRaw := *rawFlag || config.DefaultRaw
+	if *outFile != "" {
+		config.Color = false
 	}
 
-	if *outFile != "" {
-		err := os.WriteFile(*outFile, []byte(strings.Join(outputLines, "\n")+"\n"), 0644)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Failed to write to file:", err)
-			os.Exit(1)
+	if useRaw {
+		scanner := bufio.NewScanner(strings.NewReader(finalRaw))
+		var lines []string
+		for scanner.Scan() {
+			lines = append(lines, scanner.Text())
 		}
-	} else {
-		for _, line := range outputLines {
-			fmt.Println(line)
+		output(lines, *outFile)
+		return
+	}
+
+	// ★ テーブル優先
+	if *tableFlag {
+		kvs := extractKVs(finalRaw, config.Lang)
+		if len(kvs) > 0 {
+			lines := renderTable("Whois Result", kvs, 120, config.Color)
+			output(lines, *outFile)
+			return
 		}
 	}
+
+	lines := formatPretty(finalRaw, config.Lang, config.Color)
+	output(lines, *outFile)
 }
