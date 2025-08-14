@@ -5,15 +5,23 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strings"
+	"time"
+
+	"golang.org/x/net/idna"
 )
 
 var rawFlag = flag.Bool("raw", false, "Output raw whois text")
 var versionFlag = flag.Bool("version", false, "Show version information")
 var helpFlag = flag.Bool("help", false, "Show help message")
 var outFile = flag.String("o", "", "Output to file")
+var serverFlag = flag.String("server", "", "Override WHOIS server host[:port]")
+var timeoutFlag = flag.Duration("timeout", 8*time.Second, "Network timeout (e.g. 5s, 2m)")
+var followFlag = flag.Bool("follow", true, "Follow referral WHOIS server if present")
+var noColorFlag = flag.Bool("nocolor", false, "Disable colored output")
 
 type Config struct {
 	Lang       string `json:"lang"`
@@ -29,7 +37,10 @@ func loadConfig(path string) Config {
 	defer file.Close()
 
 	var config Config
-	json.NewDecoder(file).Decode(&config)
+	if err := json.NewDecoder(file).Decode(&config); err != nil {
+		// 破損している場合は安全なデフォルト
+		return Config{Lang: "en", DefaultRaw: false, Color: true}
+	}
 	return config
 }
 
@@ -104,13 +115,110 @@ func getWhoisServer(domain string) string {
 	}
 }
 
+func normalizeServer(s string) string {
+	if s == "" {
+		return s
+	}
+	if strings.Contains(s, ":") {
+		return s
+	}
+	return s + ":43"
+}
+
+func queryWhois(server, query string, timeout time.Duration) (string, error) {
+	addr := normalizeServer(server)
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+	// 読み書きの締切を設定
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+	if _, err := fmt.Fprintf(conn, "%s\r\n", query); err != nil {
+		return "", err
+	}
+	b, err := io.ReadAll(conn)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func extractReferral(raw string) string {
+	// 代表的なフィールドを探索
+	keys := []string{"Registrar WHOIS Server:", "Whois Server:", "WHOIS Server:"}
+	for _, line := range strings.Split(raw, "\n") {
+		l := strings.TrimSpace(strings.TrimRight(line, "\r"))
+		if l == "" {
+			continue
+		}
+		for _, k := range keys {
+			if strings.HasPrefix(strings.ToLower(l), strings.ToLower(k)) {
+				parts := strings.SplitN(l, ":", 2)
+				if len(parts) != 2 {
+					continue
+				}
+				v := strings.TrimSpace(parts[1])
+				if v == "" {
+					continue
+				}
+				// URL 形式や "None" のような無効値をスキップ
+				low := strings.ToLower(v)
+				if strings.HasPrefix(low, "http://") || strings.HasPrefix(low, "https://") {
+					continue
+				}
+				if low == "none" || strings.Contains(low, "not available") {
+					continue
+				}
+				return v
+			}
+		}
+	}
+	return ""
+}
+
+func formatPretty(raw string, lang string, color bool) []string {
+	lines := strings.Split(raw, "\n")
+	out := []string{}
+	seen := map[string]bool{}
+	for _, line := range lines {
+		l := strings.TrimRight(line, "\r")
+		if l == "" {
+			continue
+		}
+		for key := range labels {
+			if strings.Contains(l, key) {
+				parts := strings.SplitN(l, ":", 2)
+				if len(parts) == 2 {
+					label := translateLabel(strings.TrimSpace(parts[0]), lang)
+					value := strings.TrimSpace(parts[1])
+					formatted := fmt.Sprintf("%s: %s",
+						colorize(label, "label", color),
+						colorize(value, "value", color))
+					if !seen[formatted] {
+						out = append(out, formatted)
+						seen[formatted] = true
+					}
+				}
+			}
+		}
+	}
+	// 何も拾えなかった場合は生テキストにフォールバック
+	if len(out) == 0 {
+		for _, line := range lines {
+			out = append(out, strings.TrimRight(line, "\r"))
+		}
+	}
+	return out
+}
+
 func main() {
 	flag.Parse()
 	args := flag.Args()
 
 	if *versionFlag {
 		fmt.Println("Copyright (c) 2025 darui3018823, All rights reserved.")
-		fmt.Println("WhoisCLIApp v1.3.0")
+		fmt.Println("WhoisCLIApp v1.5.0")
 		fmt.Println("A simple command-line whois client")
 		fmt.Println("This software is released under the BSD 2-Clause License.")
 		return
@@ -123,52 +231,66 @@ func main() {
 	}
 
 	if len(args) != 1 {
-		fmt.Println("Usage: whois [-raw] [-o <file>] <domain>")
+		fmt.Println("Usage: whois [options] <domain>")
+		flag.PrintDefaults()
 		return
 	}
-	domain := args[0]
+	inputDomain := args[0]
+	// IDN を ASCII (punycode) に正規化
+	asciiDomain, errIDN := idna.Lookup.ToASCII(strings.TrimSpace(inputDomain))
+	domain := inputDomain
+	if errIDN == nil && asciiDomain != "" {
+		domain = asciiDomain
+	}
+	domain = strings.ToLower(domain)
 
 	config := loadConfig("config.json")
 	useRaw := *rawFlag || config.DefaultRaw
+
+	if *noColorFlag {
+		config.Color = false
+	}
 
 	if *outFile != "" {
 		config.Color = false // ファイル出力時はカラー無効化
 	}
 
-	server := getWhoisServer(domain)
+	// WHOIS サーバー決定（オーバーライド可能）
+	server := *serverFlag
+	if server == "" {
+		server = getWhoisServer(domain)
+	}
 
-	conn, err := net.Dial("tcp", server)
+	// 1回目のクエリ
+	raw1, err := queryWhois(server, domain, *timeoutFlag)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error connecting to whois server:", err)
 		os.Exit(1)
 	}
-	defer conn.Close()
 
-	fmt.Fprintf(conn, "%s\r\n", domain)
+	finalRaw := raw1
 
-	scanner := bufio.NewScanner(conn)
+	// リファラ追跡（例: .com/.net でレジストラ側へ）
+	if *followFlag {
+		if ref := extractReferral(raw1); ref != "" {
+			if !strings.EqualFold(normalizeServer(ref), normalizeServer(server)) {
+				if raw2, err := queryWhois(ref, domain, *timeoutFlag); err == nil && raw2 != "" {
+					finalRaw = raw2
+				}
+			}
+		}
+	}
+
+	// 出力整形
 	var outputLines []string
-
 	if useRaw {
+		// 改行統一
+		scanner := bufio.NewScanner(strings.NewReader(finalRaw))
 		for scanner.Scan() {
 			outputLines = append(outputLines, scanner.Text())
 		}
 	} else {
-		for scanner.Scan() {
-			line := scanner.Text()
-			for key := range labels {
-				if strings.Contains(line, key) {
-					parts := strings.SplitN(line, ":", 2)
-					if len(parts) == 2 {
-						label := translateLabel(strings.TrimSpace(parts[0]), config.Lang)
-						value := strings.TrimSpace(parts[1])
-						outputLines = append(outputLines, fmt.Sprintf("%s: %s",
-							colorize(label, "label", config.Color),
-							colorize(value, "value", config.Color)))
-					}
-				}
-			}
-		}
+		outputLines = formatPretty(finalRaw, config.Lang, config.Color)
 	}
 
 	if *outFile != "" {
