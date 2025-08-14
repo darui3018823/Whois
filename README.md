@@ -42,15 +42,18 @@ whois -server whois.verisign-grs.com:43 example.com
 - default_output: "conventional" | "table" | "raw"
 - color: true でカラー表示（-o/NO_COLOR/非TTY は自動無効）
 
-## ビルド（Windows）
+## ビルド
+
+クロスコンパイルを行えるスクリプトを同梱しておりますので
+以下のコマンドで実行してください
 
 PowerShell から:
 
 ```powershell
-./win_build_amd64.ps1
+./ps/autobuild.ps1
 ```
 
-成果物は `./dist/win/whois.exe` に出力されます。
+成果物は Windowsなら`./dist/win/whois.exe`、macOSなら`./dist/mac/whois`、Linuxなら`./dist/linux/whois` に出力されます。
 
 ## ライセンス
 
