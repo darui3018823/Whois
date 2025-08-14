@@ -50,7 +50,6 @@ func padRightByWidth(s string, width int) string {
 	return s + strings.Repeat(" ", width-w)
 }
 
-// 値の折り返し
 func wrapByWidth(s string, width int) []string {
 	var out []string
 	s = strings.TrimSpace(s)
@@ -227,7 +226,6 @@ func extractKVs(raw, lang string) []KV {
 			continue
 		}
 
-		// 一般的な key: value パターン
 		if strings.Contains(l, ":") {
 			parts := strings.SplitN(l, ":", 2)
 			if len(parts) != 2 {
