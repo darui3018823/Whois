@@ -1,3 +1,7 @@
+// 2025 Whois_CLIApp: darui3018823 All rights reserved.
+// All works created by darui3018823 associated with this repository are the intellectual property of darui3018823.
+// Packages and other third-party materials used in this repository are subject to their respective licenses and copyrights.
+
 package main
 
 import (
@@ -15,6 +19,8 @@ import (
 	"github.com/mattn/go-runewidth"
 	"golang.org/x/net/idna"
 )
+
+const Version = "2.0.0"
 
 var rawFlag = flag.Bool("raw", false, "Output raw whois text")
 var versionFlag = flag.Bool("version", false, "Show version information")
@@ -165,9 +171,9 @@ func renderTable(title string, kvs []KV, width int, color bool) []string {
 type KV struct{ Key, Val string }
 
 type Config struct {
-	Lang       string `json:"lang"`
-	DefaultRaw bool   `json:"defaultRaw"`
-	Color      bool   `json:"color"`
+	Lang          string `json:"lang"`
+	DefaultOutput string `json:"default_output"`
+	Color         bool   `json:"color"`
 }
 
 var jprsKeys = map[string]string{
@@ -270,13 +276,13 @@ func extractKVs(raw, lang string) []KV {
 func loadConfig(path string) Config {
 	file, err := os.Open(path)
 	if err != nil {
-		return Config{Lang: "en", DefaultRaw: false, Color: true}
+		return Config{Lang: "en", DefaultOutput: "conventional", Color: true}
 	}
 	defer file.Close()
 
 	var config Config
 	if err := json.NewDecoder(file).Decode(&config); err != nil {
-		return Config{Lang: "en", DefaultRaw: false, Color: true}
+		return Config{Lang: "en", DefaultOutput: "conventional", Color: true}
 	}
 	return config
 }
@@ -487,12 +493,12 @@ func main() {
 		// カラー出力を有効化（ファイル出力でない限り）
 		enableColor := !*noColorFlag
 		fmt.Println(colorize("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓", "title", enableColor))
-		fmt.Println(centerLine("┃", "Whois CLI Tool", "┃", 79, "title", "version", "title", enableColor))
+		fmt.Println(centerLine("┃", "Whois CLI App", "┃", 79, "title", "version", "title", enableColor))
 		fmt.Println(colorize("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛", "title", enableColor))
 		fmt.Println()
 		fmt.Printf("%s %s\n",
 			colorize("Version:", "label", enableColor),
-			colorize("v1.5.0", "version", enableColor))
+			colorize("v"+Version, "version", enableColor))
 		fmt.Printf("%s %s\n",
 			colorize("Description:", "label", enableColor),
 			colorize("A simple command-line whois client with IDN support", "value", enableColor))
@@ -506,7 +512,6 @@ func main() {
 	}
 
 	if *helpFlag {
-		// カラー出力を有効化（ファイル出力でない限り）
 		enableColor := !*noColorFlag
 		fmt.Println(colorize("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓", "title", enableColor))
 		fmt.Println(colorize("┃                            ", "title", enableColor) + colorize("Whois CLI Help", "usage", enableColor) + colorize("                             ┃", "title", enableColor))
@@ -518,7 +523,6 @@ func main() {
 		fmt.Println()
 		fmt.Printf("%s\n", colorize("Options:", "label", enableColor))
 
-		// オプション一覧を整理して表示
 		options := []struct {
 			flag string
 			desc string
@@ -567,12 +571,10 @@ func main() {
 		return
 	}
 
-	// 著作権表示を最初に出力
 	fmt.Println("Whois_CLIApp (c) 2025 darui3018823, All rights reserved.")
 	fmt.Println()
 
 	inputDomain := args[0]
-	// IDN を ASCII (punycode) に正規化
 	asciiDomain, errIDN := idna.Lookup.ToASCII(strings.TrimSpace(inputDomain))
 	domain := inputDomain
 	if errIDN == nil && asciiDomain != "" {
@@ -587,7 +589,7 @@ func main() {
 	}
 
 	if *outFile != "" {
-		config.Color = false // ファイル出力時はカラー無効化
+		config.Color = false
 	}
 
 	// WHOIS サーバー決定（オーバーライド可能）
@@ -616,13 +618,11 @@ func main() {
 		}
 	}
 
-	// 出力処理
-	useRaw := *rawFlag || config.DefaultRaw
 	if *outFile != "" {
 		config.Color = false
 	}
 
-	if useRaw {
+	if *rawFlag {
 		scanner := bufio.NewScanner(strings.NewReader(finalRaw))
 		var lines []string
 		for scanner.Scan() {
@@ -632,7 +632,6 @@ func main() {
 		return
 	}
 
-	// ★ テーブル優先
 	if *tableFlag {
 		kvs := extractKVs(finalRaw, config.Lang)
 		if len(kvs) > 0 {
@@ -642,6 +641,29 @@ func main() {
 		}
 	}
 
-	lines := formatPretty(finalRaw, config.Lang, config.Color)
-	output(lines, *outFile)
+	// フラグが指定されていない場合は設定ファイルに従う
+	switch strings.ToLower(config.DefaultOutput) {
+	case "raw":
+		scanner := bufio.NewScanner(strings.NewReader(finalRaw))
+		var lines []string
+		for scanner.Scan() {
+			lines = append(lines, scanner.Text())
+		}
+		output(lines, *outFile)
+		return
+	case "table":
+		kvs := extractKVs(finalRaw, config.Lang)
+		if len(kvs) > 0 {
+			lines := renderTable("Whois Result", kvs, 120, config.Color)
+			output(lines, *outFile)
+			return
+		}
+		// テーブル抽出失敗時はconventionalにフォールバック
+		fallthrough
+	case "conventional":
+		fallthrough
+	default:
+		lines := formatPretty(finalRaw, config.Lang, config.Color)
+		output(lines, *outFile)
+	}
 }

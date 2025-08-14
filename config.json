@@ -1,5 +1,11 @@
 {
   "lang": "ja",
-  "defaultRaw": false,
-  "color": true
+  "default_output": "conventional",
+  "color": true,
+
+  "_eg": {
+    "lang": "ja/en",
+    "default_output": "table/conventional/raw",
+    "color": "bool"
+  }
 }
